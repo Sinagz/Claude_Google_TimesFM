@@ -1,0 +1,52 @@
+# ── Virtual environment ───────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Configuration (contains API keys) ────────────────────────
+config.yaml
+
+# ── Downloaded model weights (can be multi-GB) ───────────────
+models/cache/
+
+# ── Raw market data CSVs ─────────────────────────────────────
+data/
+
+# ── Generated outputs (reports, dashboard, JSON) ─────────────
+outputs/
+
+# ── Runtime logs ─────────────────────────────────────────────
+logs/
+
+# ── Python bytecode ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ── Build / dist artefacts ────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ── IDE & OS files ────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Claude Code session files ─────────────────────────────────
+.claude/
+
+# ── Secrets / env files ───────────────────────────────────────
+.env
+.env.*
+secrets.yaml
+secrets.json

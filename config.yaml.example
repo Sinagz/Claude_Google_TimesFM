@@ -1,0 +1,158 @@
+# ============================================================
+# Multi-Agent Stock Analysis & Forecasting System
+# Configuration File — EXAMPLE
+#
+# Copy this file to config.yaml and fill in your API keys.
+#   cp config.yaml.example config.yaml
+# ============================================================
+
+# API Keys — get free keys at the links below
+alphavantage_api_key: "YOUR_ALPHAVANTAGE_KEY"     # https://www.alphavantage.co/support/#api-key
+finnhub_api_key:      "YOUR_FINNHUB_KEY"           # https://finnhub.io/register
+newsapi_org_key:      "YOUR_NEWSAPI_ORG_KEY"       # https://newsapi.org/register
+newsapi_ai_key:       "YOUR_NEWSAPI_AI_KEY"        # https://www.newsapi.ai/
+
+twitter_enabled: false
+
+# ── Stock Universe ────────────────────────────────────────────────────────────
+tickers:
+  us:
+    # Mega-cap tech
+    - "AAPL"    # Apple
+    - "MSFT"    # Microsoft
+    - "GOOGL"   # Alphabet
+    - "AMZN"    # Amazon
+    - "NVDA"    # NVIDIA
+    - "META"    # Meta Platforms
+    - "TSLA"    # Tesla
+    - "AVGO"    # Broadcom
+    - "ORCL"    # Oracle
+    - "AMD"     # AMD
+    - "ADBE"    # Adobe
+    - "CRM"     # Salesforce
+    - "QCOM"    # Qualcomm
+    - "NFLX"    # Netflix
+    - "INTC"    # Intel
+    - "MU"      # Micron
+    # Financials
+    - "JPM"     # JPMorgan Chase
+    - "V"       # Visa
+    - "MA"      # Mastercard
+    - "BAC"     # Bank of America
+    - "GS"      # Goldman Sachs
+    - "MS"      # Morgan Stanley
+    # Healthcare
+    - "JNJ"     # Johnson & Johnson
+    - "UNH"     # UnitedHealth
+    - "LLY"     # Eli Lilly
+    - "ABBV"    # AbbVie
+    - "MRK"     # Merck
+    - "PFE"     # Pfizer
+    - "BMY"     # Bristol-Myers Squibb
+    # Consumer
+    - "WMT"     # Walmart
+    - "PG"      # Procter & Gamble
+    - "KO"      # Coca-Cola
+    - "COST"    # Costco
+    - "HD"      # Home Depot
+    - "DIS"     # Disney
+    # Energy & Industrial
+    - "XOM"     # ExxonMobil
+    - "CVX"     # Chevron
+    - "RTX"     # Raytheon
+    - "HON"     # Honeywell
+    - "LMT"     # Lockheed Martin
+    # Telecom
+    - "VZ"      # Verizon
+    # Auto
+    - "F"       # Ford
+    - "GM"      # General Motors
+
+  canada:
+    - "SHOP.TO"  # Shopify
+    - "RY.TO"    # Royal Bank of Canada
+    - "TD.TO"    # Toronto-Dominion Bank
+    - "ENB.TO"   # Enbridge
+    - "CNR.TO"   # Canadian National Railway
+    - "BNS.TO"   # Bank of Nova Scotia
+    - "BMO.TO"   # Bank of Montreal
+    - "SU.TO"    # Suncor Energy
+    - "ABX.TO"   # Barrick Gold
+    - "CP.TO"    # Canadian Pacific Kansas City
+    - "CSU.TO"   # Constellation Software
+    - "MFC.TO"   # Manulife
+    - "TRP.TO"   # TC Energy
+    - "WCN.TO"   # Waste Connections
+    - "AEM.TO"   # Agnico Eagle Mines
+
+  etfs:
+    - "SPY"      # S&P 500
+    - "QQQ"      # NASDAQ-100
+    - "XLE"      # Energy sector
+    - "XLF"      # Financials sector
+    - "XLK"      # Technology sector
+    - "XLV"      # Healthcare sector
+    - "XLI"      # Industrials sector
+    - "GLD"      # Gold
+    - "TLT"      # 20+ Year Treasury
+    - "IWM"      # Russell 2000 (small cap)
+
+# ── Data Settings ─────────────────────────────────────────────────────────────
+data:
+  period_days: 730
+  save_path: "./data/"
+  cache_hours: 6
+
+# ── Model Settings ────────────────────────────────────────────────────────────
+model:
+  timesfm_checkpoint: "google/timesfm-2.5-200m-pytorch"
+  chronos_checkpoint: "amazon/chronos-bolt-small"
+  device: "auto"
+  timesfm_context_len: 512
+  timesfm_horizon_len: 256
+
+# ── Forecast Horizons (trading days) ─────────────────────────────────────────
+forecast:
+  horizons:
+    short: 21
+    medium: 126
+    long: 252
+
+# ── Signal Fusion Weights (must sum to 1.0) ───────────────────────────────────
+fusion:
+  timesfm_weight:      0.28
+  chronos_weight:      0.20
+  technical_weight:    0.20
+  sentiment_weight:    0.12
+  fundamentals_weight: 0.12
+  macro_weight:        0.08
+
+# ── Ranking ───────────────────────────────────────────────────────────────────
+ranking:
+  top_n: 5
+
+# ── Backtesting ───────────────────────────────────────────────────────────────
+backtest:
+  lookback_days: 365
+  rebalance_days: 30
+
+# ── Fundamentals Agent ────────────────────────────────────────────────────────
+fundamentals:
+  max_pe: 60
+  min_eps_growth: -0.5
+  max_eps_growth: 0.5
+
+# ── Macro Agent ──────────────────────────────────────────────────────────────
+macro:
+  vix_low:  15
+  vix_high: 30
+  lookback_days: 30
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+scheduler:
+  run_time: "07:00"
+  days: "MON,TUE,WED,THU,FRI"
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output_path: "./outputs/results.json"
+logging_level: "INFO"
