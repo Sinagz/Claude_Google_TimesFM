@@ -217,6 +217,7 @@ def generate_report(results: Dict[str, Any], config: Dict[str, Any]) -> None:
         shr = float(bt.get("sharpe_ratio",       0))
         mdd = float(bt.get("max_drawdown",       0))
         alp = float(bt.get("strategy_vs_bench",  0))
+        wr  = float(bt.get("win_rate",           0))
 
         cr_col  = _change_color(cr)
         alp_col = _change_color(alp)
@@ -235,6 +236,11 @@ def generate_report(results: Dict[str, Any], config: Dict[str, Any]) -> None:
                          "—")
         bt_table.add_row("Max drawdown",
                          f"[red]{mdd:.2%}[/red]", "—")
+        bt_table.add_row("Win rate (daily)",
+                         f"{'[green]' if wr>=0.55 else '[yellow]' if wr>=0.5 else '[red]'}"
+                         f"{wr:.1%}"
+                         f"{'[/green]' if wr>=0.55 else '[/yellow]' if wr>=0.5 else '[/red]'}",
+                         "—")
         bt_table.add_row("Rebalances",
                          str(bt.get("n_rebalances", "—")), "—")
 

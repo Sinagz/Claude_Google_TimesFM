@@ -260,7 +260,8 @@ def generate_dashboard(
                 f"Backtest Equity Curve  |  "
                 f"Return: {bt.get('cumulative_return',0):.1%}  "
                 f"Sharpe: {bt.get('sharpe_ratio',0):.2f}  "
-                f"MaxDD: {bt.get('max_drawdown',0):.1%}"
+                f"MaxDD: {bt.get('max_drawdown',0):.1%}  "
+                f"Win Rate: {bt.get('win_rate',0):.1%}"
             ),
             xaxis_title="Date", yaxis_title="Portfolio Value (normalised)",
             paper_bgcolor="#0f0f23", plot_bgcolor="#141428",

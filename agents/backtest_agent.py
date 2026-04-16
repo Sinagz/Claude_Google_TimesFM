@@ -75,21 +75,23 @@ class BacktestAgent:
         bench_ret = self._benchmark_return(prices)
 
         # ── Metrics ───────────────────────────────────────────────────────
-        cum_ret  = float(portfolio_values[-1] / portfolio_values[0] - 1)
-        ann_ret  = float((1 + cum_ret) ** (_TRADING_DAYS_PER_YEAR / n_days) - 1)
+        cum_ret    = float(portfolio_values[-1] / portfolio_values[0] - 1)
+        ann_ret    = float((1 + cum_ret) ** (_TRADING_DAYS_PER_YEAR / n_days) - 1)
         daily_rets = np.diff(portfolio_values) / portfolio_values[:-1]
-        sharpe   = self._sharpe(daily_rets)
-        max_dd   = self._max_drawdown(portfolio_values)
+        sharpe     = self._sharpe(daily_rets)
+        max_dd     = self._max_drawdown(portfolio_values)
+        win_rate   = self._win_rate(daily_rets)
 
         # Build equity curve for plotting
         dates = prices.index.strftime("%Y-%m-%d").tolist()
         equity_curve = [[d, round(float(v), 4)] for d, v in zip(dates, portfolio_values)]
 
         result = {
-            "cumulative_return":  round(cum_ret,  4),
-            "annualised_return":  round(ann_ret,  4),
-            "sharpe_ratio":       round(sharpe,   4),
-            "max_drawdown":       round(max_dd,   4),
+            "cumulative_return":  round(cum_ret,   4),
+            "annualised_return":  round(ann_ret,   4),
+            "sharpe_ratio":       round(sharpe,    4),
+            "max_drawdown":       round(max_dd,    4),
+            "win_rate":           round(win_rate,  4),
             "n_rebalances":       max(1, n_days // self.rebalance_days),
             "benchmark_return":   round(bench_ret, 4),
             "strategy_vs_bench":  round(cum_ret - bench_ret, 4),
@@ -97,8 +99,8 @@ class BacktestAgent:
         }
 
         logger.info(
-            "Backtest result — cum_ret=%.2f%%  sharpe=%.2f  max_dd=%.2f%%",
-            cum_ret * 100, sharpe, max_dd * 100,
+            "Backtest result — cum_ret=%.2f%%  sharpe=%.2f  max_dd=%.2f%%  win_rate=%.1f%%",
+            cum_ret * 100, sharpe, max_dd * 100, win_rate * 100,
         )
         return result
 
@@ -224,12 +226,20 @@ class BacktestAgent:
         return float(dd.min())
 
     @staticmethod
+    def _win_rate(daily_rets: np.ndarray) -> float:
+        """Fraction of trading days with a positive portfolio return."""
+        if len(daily_rets) == 0:
+            return 0.0
+        return float(np.sum(daily_rets > 0) / len(daily_rets))
+
+    @staticmethod
     def _empty_result() -> dict:
         return {
             "cumulative_return":  0.0,
             "annualised_return":  0.0,
             "sharpe_ratio":       0.0,
             "max_drawdown":       0.0,
+            "win_rate":           0.0,
             "n_rebalances":       0,
             "benchmark_return":   0.0,
             "strategy_vs_bench":  0.0,
