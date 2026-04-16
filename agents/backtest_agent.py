@@ -181,23 +181,25 @@ class BacktestAgent:
         """
         frames = {}
         for ticker, df in raw_data.items():
-            if "Close" in df.columns:
-                frames[ticker] = df["Close"]
+            if "Close" not in df.columns:
+                continue
+            s = df["Close"].copy()
+            # Normalise index to tz-naive date-only so US + Canadian calendars align
+            if not isinstance(s.index, pd.DatetimeIndex):
+                s.index = pd.to_datetime(s.index, utc=True)
+            if s.index.tz is not None:
+                s.index = s.index.tz_localize(None)
+            s.index = s.index.normalize()   # strip intraday time component
+            s = s[~s.index.duplicated(keep="last")]
+            frames[ticker] = s
 
         if not frames:
             return pd.DataFrame()
 
         combined = pd.DataFrame(frames)
-
-        # Ensure tz-naive DatetimeIndex so strftime works on Windows
-        if not isinstance(combined.index, pd.DatetimeIndex):
-            combined.index = pd.to_datetime(combined.index, utc=True)
-        if combined.index.tz is not None:
-            combined.index = combined.index.tz_localize(None)
-
         combined = combined.sort_index()
 
-        # Drop columns with > 10 % NaN
+        # Drop tickers with > 10 % missing days (e.g. holidays-only gaps)
         thresh = int(len(combined) * 0.90)
         combined = combined.dropna(thresh=thresh, axis=1)
         combined = combined.ffill().bfill()

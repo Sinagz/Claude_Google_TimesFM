@@ -298,13 +298,15 @@ def generate_dashboard(
     html_parts = [_html_header(now, meta)]
 
     # Navigation tabs
-    html_parts.append('<div class="tabs">')
+    html_parts.append('<nav class="nav-bar">')
     for i, (title, _) in enumerate(figs):
         active = " active" if i == 0 else ""
+        num = f"0{i+1}" if i < 9 else str(i+1)
         html_parts.append(
-            f'<button class="tab{active}" onclick="showTab({i})">{title}</button>'
+            f'<button class="tab{active}" onclick="showTab({i})">'
+            f'<span class="tab-num">{num}</span>{title}</button>'
         )
-    html_parts.append("</div>")
+    html_parts.append("</nav>")
 
     # Tab content
     for i, (title, fig) in enumerate(figs):
@@ -327,52 +329,339 @@ def generate_dashboard(
 # ── HTML scaffolding ──────────────────────────────────────────────────────────
 
 def _rank_colors(lst, n):
-    palette = ["#1a5276", "#154360", "#0e6655", "#4a235a", "#7b241c"]
-    return [(palette[i] if i < len(lst) else "#1a1a2e") for i in range(n)]
+    palette = ["#00e5a0", "#00b87a", "#f0b429", "#e05c5c", "#9b72cf"]
+    return [(palette[i] if i < len(lst) else "#0d1526") for i in range(n)]
 
 
 def _html_header(now: str, meta: dict) -> str:
+    models_str = ', '.join(meta.get('models_used', []))
+    n_tickers  = meta.get('n_tickers_analysed', '?')
+    elapsed    = meta.get('elapsed_seconds', '?')
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Stock Forecast Dashboard</title>
+  <title>Deep Market — Stock Forecast Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap" rel="stylesheet">
   <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    /* ── Design tokens ─────────────────────────────────────── */
+    :root {{
+      --bg-void:      #04060e;
+      --bg-deep:      #080c18;
+      --bg-surface:   #0d1526;
+      --bg-elevated:  #111c33;
+      --border-dim:   #1a2744;
+      --border-glow:  #00e5a044;
+      --mint:         #00e5a0;
+      --mint-dim:     #00b87a;
+      --amber:        #f0b429;
+      --crimson:      #ff4757;
+      --violet:       #9b72cf;
+      --text-primary: #e2e8f8;
+      --text-secondary:#8899bb;
+      --text-muted:   #4a5878;
+      --font-display: 'Bebas Neue', sans-serif;
+      --font-mono:    'IBM Plex Mono', monospace;
+      --font-body:    'IBM Plex Sans', sans-serif;
+    }}
+
+    /* ── Reset & base ──────────────────────────────────────── */
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+    html {{ scroll-behavior: smooth; }}
+
     body {{
-      background: #0f0f23;
-      color: #e0e0e0;
-      font-family: 'Segoe UI', monospace;
-      padding: 20px;
+      background: var(--bg-void);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      min-height: 100vh;
+      overflow-x: hidden;
+      position: relative;
     }}
-    header {{
-      text-align: center;
-      padding: 20px 0 10px;
-      border-bottom: 1px solid #333;
-      margin-bottom: 16px;
+
+    /* ── Scanline texture overlay ──────────────────────────── */
+    body::before {{
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
     }}
-    header h1 {{ font-size: 1.7em; color: #00d4ff; letter-spacing: 1px; }}
-    header p  {{ font-size: 0.85em; color: #888; margin-top: 4px; }}
-    .tabs {{
-      display: flex; flex-wrap: wrap; gap: 6px;
-      margin-bottom: 14px;
+
+    /* ── Radial ambient glow ───────────────────────────────── */
+    body::after {{
+      content: '';
+      position: fixed;
+      top: -20vh; left: 50%;
+      transform: translateX(-50%);
+      width: 80vw; height: 60vh;
+      background: radial-gradient(ellipse at center,
+        rgba(0,229,160,0.04) 0%,
+        rgba(0,229,160,0.01) 50%,
+        transparent 70%);
+      pointer-events: none;
+      z-index: 0;
     }}
+
+    /* ── Ticker tape strip ─────────────────────────────────── */
+    .ticker-tape {{
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-dim);
+      padding: 6px 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }}
+    .ticker-inner {{
+      display: inline-block;
+      animation: ticker-scroll 32s linear infinite;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      letter-spacing: 0.08em;
+    }}
+    .ticker-inner .up   {{ color: var(--mint); }}
+    .ticker-inner .down {{ color: var(--crimson); }}
+    .ticker-inner .sep  {{ margin: 0 24px; color: var(--border-dim); }}
+    @keyframes ticker-scroll {{
+      0%   {{ transform: translateX(0); }}
+      100% {{ transform: translateX(-50%); }}
+    }}
+
+    /* ── Main layout wrapper ───────────────────────────────── */
+    .shell {{
+      position: relative;
+      z-index: 1;
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 0 24px 48px;
+    }}
+
+    /* ── Header ────────────────────────────────────────────── */
+    .site-header {{
+      padding: 40px 0 32px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+      gap: 24px;
+      border-bottom: 1px solid var(--border-dim);
+      margin-bottom: 32px;
+      position: relative;
+    }}
+    .site-header::after {{
+      content: '';
+      position: absolute;
+      bottom: -1px; left: 0;
+      width: 180px; height: 1px;
+      background: linear-gradient(90deg, var(--mint), transparent);
+    }}
+
+    .header-wordmark {{
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }}
+    .wordmark-eyebrow {{
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--mint);
+    }}
+    .wordmark-title {{
+      font-family: var(--font-display);
+      font-size: clamp(2.8rem, 5vw, 4.8rem);
+      line-height: 0.9;
+      letter-spacing: 0.04em;
+      color: var(--text-primary);
+      text-shadow: 0 0 60px rgba(0,229,160,0.15);
+    }}
+    .wordmark-sub {{
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.12em;
+      margin-top: 8px;
+    }}
+
+    .header-stats {{
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    }}
+    .stat-row {{
+      display: flex;
+      gap: 20px;
+    }}
+    .stat-pill {{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-dim);
+      border-radius: 4px;
+      padding: 8px 16px;
+      min-width: 80px;
+    }}
+    .stat-pill .val {{
+      font-family: var(--font-display);
+      font-size: 1.5rem;
+      color: var(--mint);
+      line-height: 1;
+    }}
+    .stat-pill .lbl {{
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }}
+    .header-timestamp {{
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.1em;
+    }}
+    .header-models {{
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-secondary);
+      letter-spacing: 0.05em;
+    }}
+    .model-tag {{
+      display: inline-block;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-dim);
+      border-radius: 3px;
+      padding: 2px 8px;
+      margin-left: 6px;
+      color: var(--amber);
+    }}
+
+    /* ── Tab navigation ────────────────────────────────────── */
+    .nav-bar {{
+      display: flex;
+      gap: 2px;
+      margin-bottom: 28px;
+      border-bottom: 1px solid var(--border-dim);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }}
+    .nav-bar::-webkit-scrollbar {{ display: none; }}
+
     .tab {{
-      background: #1a1a2e; color: #aaa;
-      border: 1px solid #333; border-radius: 6px;
-      padding: 7px 14px; cursor: pointer; font-size: 0.85em;
-      transition: all 0.2s;
+      position: relative;
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      padding: 12px 22px 14px;
+      cursor: pointer;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      transition: color 0.2s;
+      outline: none;
     }}
-    .tab:hover, .tab.active {{
-      background: #00d4ff; color: #000; border-color: #00d4ff; font-weight: 600;
+    .tab::after {{
+      content: '';
+      position: absolute;
+      bottom: -1px; left: 0; right: 0;
+      height: 2px;
+      background: var(--mint);
+      transform: scaleX(0);
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
     }}
-    .tab-content {{ width: 100%; }}
+    .tab:hover {{ color: var(--text-secondary); }}
+    .tab.active {{
+      color: var(--mint);
+    }}
+    .tab.active::after {{
+      transform: scaleX(1);
+    }}
+
+    /* Tab counter badge */
+    .tab-num {{
+      display: inline-block;
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-right: 7px;
+      vertical-align: 1px;
+    }}
+    .tab.active .tab-num {{ color: var(--mint-dim); }}
+
+    /* ── Content panels ────────────────────────────────────── */
+    .tab-content {{
+      width: 100%;
+      animation: panel-in 0.3s cubic-bezier(0.4,0,0.2,1);
+    }}
+    @keyframes panel-in {{
+      from {{ opacity: 0; transform: translateY(6px); }}
+      to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+
+    /* ── Plotly chart container overrides ─────────────────── */
+    .js-plotly-plot .plotly {{
+      border-radius: 6px;
+      overflow: hidden;
+    }}
+
+    /* ── Scrollbar styling ─────────────────────────────────── */
+    ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+    ::-webkit-scrollbar-track {{ background: var(--bg-void); }}
+    ::-webkit-scrollbar-thumb {{
+      background: var(--border-dim);
+      border-radius: 3px;
+    }}
+    ::-webkit-scrollbar-thumb:hover {{ background: var(--mint-dim); }}
+
+    /* ── Section label (above charts) ─────────────────────── */
+    .section-label {{
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 0 2px 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+    .section-label::after {{
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border-dim);
+    }}
+
+    /* ── Responsive ────────────────────────────────────────── */
+    @media (max-width: 768px) {{
+      .site-header {{ grid-template-columns: 1fr; }}
+      .header-stats {{ align-items: flex-start; }}
+      .stat-row {{ flex-wrap: wrap; }}
+    }}
   </style>
+
   <script>
     function showTab(idx) {{
       document.querySelectorAll('.tab-content').forEach((el, i) => {{
         el.style.display = (i === idx) ? 'block' : 'none';
+        if (i === idx) {{
+          el.style.animation = 'none';
+          el.offsetHeight;  /* reflow */
+          el.style.animation = '';
+        }}
       }});
       document.querySelectorAll('.tab').forEach((btn, i) => {{
         btn.classList.toggle('active', i === idx);
@@ -381,16 +670,77 @@ def _html_header(now: str, meta: dict) -> str:
   </script>
 </head>
 <body>
-<header>
-  <h1>Multi-Agent Stock Forecasting Dashboard</h1>
-  <p>Generated: {now} &nbsp;|&nbsp;
-     Tickers: {meta.get('n_tickers_analysed','?')} &nbsp;|&nbsp;
-     Models: {', '.join(meta.get('models_used', []))} &nbsp;|&nbsp;
-     Runtime: {meta.get('elapsed_seconds','?')} s
-  </p>
-</header>
+
+<!-- Ticker tape -->
+<div class="ticker-tape">
+  <div class="ticker-inner">
+    <span class="up">▲ TimesFM-2.5&nbsp;&nbsp;GOOGLE AI</span>
+    <span class="sep">|</span>
+    <span class="up">▲ Chronos-Bolt&nbsp;&nbsp;AMAZON AI</span>
+    <span class="sep">|</span>
+    <span>FinBERT&nbsp;&nbsp;SENTIMENT ANALYSIS</span>
+    <span class="sep">|</span>
+    <span>MACRO REGIME&nbsp;&nbsp;<span class="up">NEUTRAL {meta.get('macro_score_label','0.55')}</span></span>
+    <span class="sep">|</span>
+    <span class="up">▲ FUNDAMENTALS&nbsp;&nbsp;P/E · EPS · ROE · D/E</span>
+    <span class="sep">|</span>
+    <span>TECHNICAL&nbsp;&nbsp;RSI · MACD · BOLLINGER</span>
+    <span class="sep">|</span>
+    <span>GENERATED&nbsp;&nbsp;{now}</span>
+    <span class="sep">|</span>
+    <!-- duplicate for seamless loop -->
+    <span class="up">▲ TimesFM-2.5&nbsp;&nbsp;GOOGLE AI</span>
+    <span class="sep">|</span>
+    <span class="up">▲ Chronos-Bolt&nbsp;&nbsp;AMAZON AI</span>
+    <span class="sep">|</span>
+    <span>FinBERT&nbsp;&nbsp;SENTIMENT ANALYSIS</span>
+    <span class="sep">|</span>
+    <span>MACRO REGIME&nbsp;&nbsp;<span class="up">NEUTRAL</span></span>
+    <span class="sep">|</span>
+    <span class="up">▲ FUNDAMENTALS&nbsp;&nbsp;P/E · EPS · ROE · D/E</span>
+    <span class="sep">|</span>
+    <span>TECHNICAL&nbsp;&nbsp;RSI · MACD · BOLLINGER</span>
+    <span class="sep">|</span>
+    <span>GENERATED&nbsp;&nbsp;{now}</span>
+    <span class="sep">|</span>
+  </div>
+</div>
+
+<div class="shell">
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-wordmark">
+      <span class="wordmark-eyebrow">Multi-Agent AI Forecasting System</span>
+      <h1 class="wordmark-title">DEEP MARKET</h1>
+      <span class="wordmark-sub">INTELLIGENCE · PRECISION · SIGNAL</span>
+    </div>
+    <div class="header-stats">
+      <div class="stat-row">
+        <div class="stat-pill">
+          <span class="val">{n_tickers}</span>
+          <span class="lbl">Tickers</span>
+        </div>
+        <div class="stat-pill">
+          <span class="val">{elapsed}s</span>
+          <span class="lbl">Runtime</span>
+        </div>
+        <div class="stat-pill">
+          <span class="val">6</span>
+          <span class="lbl">Signals</span>
+        </div>
+      </div>
+      <div class="header-models">
+        Models:
+        {''.join(f'<span class="model-tag">{m}</span>' for m in meta.get('models_used', []))}
+      </div>
+      <div class="header-timestamp">&#x25CF;&nbsp; {now}</div>
+    </div>
+  </header>
 """
 
 
 def _html_footer() -> str:
-    return "</body></html>"
+    return """
+</div><!-- /.shell -->
+</body>
+</html>"""

@@ -23,6 +23,7 @@ def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
         return logger
 
     logger.setLevel(numeric_level)
+    logger.propagate = False     # prevent double-printing via root logger
 
     fmt = logging.Formatter(
         "%(asctime)s [%(name)-22s] %(levelname)-8s %(message)s",
