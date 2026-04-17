@@ -49,3 +49,16 @@ pytz>=2024.1
 # ── Visualisation ───────────────────────────────────────────
 plotly>=5.18.0
 # matplotlib>=3.7.0
+
+# ── Reinforcement Learning ───────────────────────────────────
+# torch already listed above (PPO implemented natively — no extra dep)
+# Optional:
+# stable-baselines3>=2.0.0     # drop-in SB3 alternative
+# gymnasium>=0.29.0            # only if switching to Gym interface
+
+# ── IBKR Execution (optional) ───────────────────────────────
+# ib_insync>=0.9.86            # pip install ib_insync
+#                              # Requires TWS or IB Gateway on localhost
+
+# ── Rich terminal output ─────────────────────────────────────
+rich>=13.0.0

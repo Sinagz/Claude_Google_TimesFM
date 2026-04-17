@@ -12,7 +12,7 @@ Returns a dict  {ticker: pd.DataFrame}  for downstream agents.
 """
 
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -34,9 +34,10 @@ class DataAgent:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def run(self) -> Dict[str, pd.DataFrame]:
-        """Fetch data for all tickers; return dict of DataFrames."""
-        tickers = get_all_tickers(self.config)
+    def run(self, tickers: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+        """Fetch data for tickers (override) or all configured tickers."""
+        if tickers is None:
+            tickers = get_all_tickers(self.config)
         results: Dict[str, pd.DataFrame] = {}
 
         logger.info("Starting data ingestion for %d tickers", len(tickers))

@@ -149,9 +149,11 @@ ranking:
 
 # ── Backtesting ───────────────────────────────────────────────────────────────
 backtest:
-  lookback_days:  365
-  rebalance_days: 30
-  train_window:   180   # rolling history window used for holding selection
+  lookback_days:        365
+  rebalance_days:       30
+  train_window:         180   # rolling history window used for holding selection
+  transaction_cost_bps: 10    # 10 basis points per trade (realistic for retail)
+  slippage_bps:          5    # 5 basis points random slippage
 
 # ── Fundamentals Agent ────────────────────────────────────────────────────────
 fundamentals:
@@ -169,6 +171,76 @@ macro:
 scheduler:
   run_time: "07:00"
   days: "MON,TUE,WED,THU,FRI"
+
+# ── Universe Pre-Screening ────────────────────────────────────────────────────
+universe:
+  min_price:       2.0          # skip penny stocks
+  min_avg_volume:  500000       # skip illiquid tickers
+  momentum_days:   21           # momentum window for pre-screening score
+  max_prescreen:   150          # max candidates passed to full pipeline
+  per_sector_cap:  15           # max tickers per sector in candidate list
+
+# ── Portfolio Strategy ────────────────────────────────────────────────────────
+portfolio:
+  growth_n:    5    # top tickers in Growth portfolio
+  value_n:     5    # top tickers in Value portfolio
+  defensive_n: 5    # top tickers in Defensive portfolio
+  final_n:     10   # tickers in final diversified top-10
+
+# ── Risk Engine ───────────────────────────────────────────────────────────────
+risk:
+  min_vol:                   0.05    # floor vol to avoid div-by-zero
+  liquidity_vol_threshold:   500000  # avg daily volume below this → liquidity penalty
+
+# ── Clustering ────────────────────────────────────────────────────────────────
+clustering:
+  n_clusters:    8    # target number of KMeans clusters
+  random_state:  42
+
+# ── Crash Detection ──────────────────────────────────────────────────────────
+crash_detection:
+  lookback_days:         60
+  vix_high:              30.0
+  vix_extreme:           40.0
+  correlation_threshold: 0.75
+  breadth_threshold:     0.65
+
+# ── RL Trading Agent (PPO) ────────────────────────────────────────────────────
+rl_agent:
+  training_enabled: true
+  n_assets:         10
+  hidden:           256
+  n_episodes:       8
+  n_epochs:         4
+  episode_len:      126
+  rollout_len:      252
+  batch_size:       64
+  lr:               0.0003
+  gamma:            0.99
+  gae_lambda:       0.95
+  clip_eps:         0.2
+  entropy_coef:     0.01
+  value_coef:       0.5
+  lambda_drawdown:  0.10
+  lambda_vol:       0.05
+  transaction_cost: 0.001
+  model_path:       "./models/cache/rl_model.pt"
+
+# ── IBKR Execution Agent ──────────────────────────────────────────────────────
+ibkr:
+  enabled:               false    # false = disabled (safe default)
+  live_trading:          false    # NEVER set true without thorough testing
+  host:                  "127.0.0.1"
+  paper_port:            7497
+  live_port:             7496
+  client_id:             1
+  kill_switch_threshold: 0.65
+  max_position_pct:      0.15
+  max_total_exposure:    0.95
+  order_type:            "LIMIT"
+  limit_slippage_pct:    0.002
+  portfolio_value:       100000
+  dry_run:               true
 
 # ── Output ────────────────────────────────────────────────────────────────────
 output_path: "./outputs/results.json"
