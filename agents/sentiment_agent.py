@@ -1,23 +1,22 @@
 """
 Sentiment Analysis Agent
 ─────────────────────────
-Fetches recent news for each ticker from multiple sources (with API rotation)
-and scores each article's sentiment using:
+Fetches recent news for each ticker and scores sentiment using FinBERT
+(primary) or VADER (fallback).
 
-  Primary  : FinBERT (ProsusAI/finbert) — fine-tuned on financial text
-  Fallback : VADER  (rule-based, fast, no model download needed)
+Decay weighting
+  Articles are weighted by recency using exponential decay:
+    weight = exp(-ln(2) / HALF_LIFE_DAYS × days_ago)
+  where HALF_LIFE_DAYS = 3.5  (an article 3.5 days old carries half the
+  weight of today's article).  This ensures recent bullish/bearish signals
+  dominate over stale ones.
 
-API rotation order (avoids exhausting any single quota):
-  1. NewsAPI.org    (~100 req/day free)
-  2. NewsAPI.ai     (EventRegistry — key-dependent)
-  3. Alpha Vantage  News & Sentiment endpoint (~25 req/day budget shared)
-  4. Finnhub        company-news endpoint (~60 req/min)
-
-Returns {ticker -> sentiment_score} where scores are in [-1, +1].
+Output: {ticker -> score} in [-1, +1]
 """
 
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+import math
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -31,34 +30,51 @@ from utils.helpers import date_n_days_ago, setup_logger
 
 logger = setup_logger("sentiment_agent")
 
-# FinBERT label → numeric value
-_FINBERT_MAP = {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
-
-# Number of articles to score per ticker
+_FINBERT_MAP        = {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
 _ARTICLES_PER_TICKER = 10
+_NEWS_DAYS           = 7
+_DECAY_HALF_LIFE     = 3.5   # days — half-life for recency weighting
 
-# News look-back (days)
-_NEWS_DAYS = 7
+# Article = (text_snippet, days_ago)
+Article = Tuple[str, int]
+
+
+def _decay_weight(days_ago: int) -> float:
+    """Exponential decay: weight halves every _DECAY_HALF_LIFE days."""
+    rate = math.log(2) / _DECAY_HALF_LIFE
+    return math.exp(-rate * max(0, days_ago))
+
+
+def _parse_days_ago(dt_str: str, fmt: Optional[str] = None) -> int:
+    """Parse a datetime string and return how many days ago it was."""
+    today = datetime.now()
+    try:
+        if fmt:
+            pub = datetime.strptime(dt_str, fmt)
+        else:
+            # ISO 8601 with possible trailing Z
+            pub = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            pub = pub.replace(tzinfo=None)
+        return max(0, (today - pub).days)
+    except Exception:
+        return _NEWS_DAYS // 2   # default: mid-range age
 
 
 class SentimentAgent:
     def __init__(self, config: dict):
-        self.config = config
+        self.config  = config
         self.newsapi = NewsAPIClient(config["newsapi_org_key"])
         self.newsai  = NewsAIClient(config["newsapi_ai_key"])
         self.av      = AlphaVantageClient(config["alphavantage_api_key"])
         self.fh      = FinnhubClient(config["finnhub_api_key"])
-        self._finbert   = None
-        self._vader     = None
+        self._finbert     = None
+        self._vader       = None
         self._use_finbert = True
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self, tickers: List[str]) -> Dict[str, float]:
-        """
-        Returns {ticker -> sentiment_score} in [-1, +1].
-        Positive means bullish news; negative means bearish.
-        """
+        """Returns {ticker -> sentiment_score} in [-1, +1] with decay weighting."""
         self._init_scorer()
         results: Dict[str, float] = {}
         from_date = date_n_days_ago(_NEWS_DAYS)
@@ -66,31 +82,30 @@ class SentimentAgent:
         logger.info("Fetching & scoring news for %d tickers …", len(tickers))
 
         for ticker in tickers:
-            texts = self._fetch_news(ticker, from_date)
-            if texts:
-                score = self._score_texts(texts)
+            articles = self._fetch_news(ticker, from_date)
+            if articles:
+                score = self._score_articles(articles)
             else:
-                logger.debug("No news found for %s — neutral score", ticker)
+                logger.debug("No news for %s — neutral score", ticker)
                 score = 0.0
             results[ticker] = round(score, 4)
-            logger.debug("%s sentiment=%.3f (%d articles)", ticker, score, len(texts))
+            logger.debug(
+                "%s  sentiment=%.3f  articles=%d", ticker, score, len(articles)
+            )
 
         logger.info("Sentiment scoring complete")
         return results
 
     # ── Scorer initialisation ─────────────────────────────────────────────────
 
-    def _init_scorer(self):
-        """Try to load FinBERT; fall back to VADER if unavailable."""
+    def _init_scorer(self) -> None:
         if self._finbert is not None or self._vader is not None:
             return
-
         try:
             from transformers import pipeline as hf_pipeline
             import torch
-
-            device_idx = 0 if (torch.cuda.is_available()) else -1
-            logger.info("Loading FinBERT sentiment model …")
+            device_idx = 0 if torch.cuda.is_available() else -1
+            logger.info("Loading FinBERT …")
             self._finbert = hf_pipeline(
                 "text-classification",
                 model="ProsusAI/finbert",
@@ -105,7 +120,7 @@ class SentimentAgent:
             self._init_vader()
             self._use_finbert = False
 
-    def _init_vader(self):
+    def _init_vader(self) -> None:
         try:
             from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
             self._vader = SentimentIntensityAnalyzer()
@@ -116,127 +131,140 @@ class SentimentAgent:
                 from nltk.sentiment.vader import SentimentIntensityAnalyzer
                 self._vader = SentimentIntensityAnalyzer()
             except Exception as exc2:
-                logger.error("VADER also unavailable: %s — scores will be 0", exc2)
+                logger.error("VADER unavailable: %s — scores will be 0", exc2)
 
-    # ── News fetching (with API rotation) ────────────────────────────────────
+    # ── News fetching ─────────────────────────────────────────────────────────
 
-    def _fetch_news(self, ticker: str, from_date: str) -> List[str]:
-        """Try each API in order; return as many article snippets as possible."""
-        # Use plain company name for better search results
+    def _fetch_news(self, ticker: str, from_date: str) -> List[Article]:
+        """Try each API in order; return up to _ARTICLES_PER_TICKER articles."""
         query = ticker.replace(".TO", "").replace(".V", "")
+        articles: List[Article] = []
 
-        texts: List[str] = []
+        articles = self._from_newsapi_org(query, from_date)
+        if len(articles) >= _ARTICLES_PER_TICKER:
+            return articles[:_ARTICLES_PER_TICKER]
 
-        # 1) NewsAPI.org
-        texts = self._from_newsapi_org(query, from_date)
-        if len(texts) >= _ARTICLES_PER_TICKER:
-            return texts[:_ARTICLES_PER_TICKER]
+        articles += self._from_newsapi_ai(query)
+        if len(articles) >= _ARTICLES_PER_TICKER:
+            return articles[:_ARTICLES_PER_TICKER]
 
-        # 2) NewsAPI.ai
-        texts += self._from_newsapi_ai(query)
-        if len(texts) >= _ARTICLES_PER_TICKER:
-            return texts[:_ARTICLES_PER_TICKER]
+        articles += self._from_alpha_vantage(ticker)
+        if len(articles) >= _ARTICLES_PER_TICKER:
+            return articles[:_ARTICLES_PER_TICKER]
 
-        # 3) Alpha Vantage news (only if budget remains)
-        texts += self._from_alpha_vantage(ticker)
-        if len(texts) >= _ARTICLES_PER_TICKER:
-            return texts[:_ARTICLES_PER_TICKER]
+        articles += self._from_finnhub(query, from_date)
+        return articles[:_ARTICLES_PER_TICKER]
 
-        # 4) Finnhub
-        texts += self._from_finnhub(query, from_date)
-
-        return texts[:_ARTICLES_PER_TICKER]
-
-    def _from_newsapi_org(self, query: str, from_date: str) -> List[str]:
+    def _from_newsapi_org(self, query: str, from_date: str) -> List[Article]:
         try:
             data = self.newsapi.get_everything(
-                query=query,
-                from_date=from_date,
-                page_size=_ARTICLES_PER_TICKER,
+                query=query, from_date=from_date, page_size=_ARTICLES_PER_TICKER,
             )
             if not data or data.get("status") != "ok":
                 return []
-            articles = data.get("articles", [])
-            return self._extract_texts(articles, title_key="title", desc_key="description")
+            articles = []
+            for a in data.get("articles", []):
+                title = (a.get("title") or "").strip()
+                desc  = (a.get("description") or "")[:200]
+                text  = f"{title}. {desc}".strip(" .")
+                if not text:
+                    continue
+                days_ago = _parse_days_ago(a.get("publishedAt", ""))
+                articles.append((text, days_ago))
+            return articles
         except Exception as exc:
-            logger.debug("NewsAPI.org error for %s: %s", query, exc)
+            logger.debug("NewsAPI.org error %s: %s", query, exc)
             return []
 
-    def _from_newsapi_ai(self, query: str) -> List[str]:
+    def _from_newsapi_ai(self, query: str) -> List[Article]:
         try:
             data = self.newsai.get_articles(keyword=query, max_items=_ARTICLES_PER_TICKER)
             if not data:
                 return []
-            articles = data.get("articles", {}).get("results", [])
-            texts = []
-            for a in articles:
-                title = a.get("title", "")
-                body  = a.get("body", "")[:200]
-                if title:
-                    texts.append(f"{title}. {body}".strip())
-            return texts
+            articles = []
+            for a in data.get("articles", {}).get("results", []):
+                title = (a.get("title") or "").strip()
+                body  = (a.get("body") or "")[:200]
+                text  = f"{title}. {body}".strip(" .")
+                if not text:
+                    continue
+                days_ago = _parse_days_ago(a.get("dateTime", ""))
+                articles.append((text, days_ago))
+            return articles
         except Exception as exc:
-            logger.debug("NewsAPI.ai error for %s: %s", query, exc)
+            logger.debug("NewsAPI.ai error %s: %s", query, exc)
             return []
 
-    def _from_alpha_vantage(self, ticker: str) -> List[str]:
+    def _from_alpha_vantage(self, ticker: str) -> List[Article]:
         try:
             data = self.av.get_news_sentiment([ticker], limit=_ARTICLES_PER_TICKER)
             if not data:
                 return []
-            feed = data.get("feed", [])
-            texts = []
-            for item in feed:
-                title   = item.get("title", "")
-                summary = item.get("summary", "")[:200]
-                if title:
-                    texts.append(f"{title}. {summary}".strip())
-            return texts
+            articles = []
+            for item in data.get("feed", []):
+                title   = (item.get("title") or "").strip()
+                summary = (item.get("summary") or "")[:200]
+                text    = f"{title}. {summary}".strip(" .")
+                if not text:
+                    continue
+                # AV format: "20240416T120000"
+                days_ago = _parse_days_ago(
+                    item.get("time_published", ""), fmt="%Y%m%dT%H%M%S"
+                )
+                articles.append((text, days_ago))
+            return articles
         except Exception as exc:
-            logger.debug("AV news error for %s: %s", ticker, exc)
+            logger.debug("AV news error %s: %s", ticker, exc)
             return []
 
-    def _from_finnhub(self, symbol: str, from_date: str) -> List[str]:
+    def _from_finnhub(self, symbol: str, from_date: str) -> List[Article]:
         try:
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            articles = self.fh.get_company_news(symbol, from_date, to_date)
-            if not articles:
+            to_date  = datetime.now().strftime("%Y-%m-%d")
+            raw_list = self.fh.get_company_news(symbol, from_date, to_date)
+            if not raw_list:
                 return []
-            texts = []
-            for a in articles[:_ARTICLES_PER_TICKER]:
-                headline = a.get("headline", "")
-                summary  = a.get("summary", "")[:200]
-                if headline:
-                    texts.append(f"{headline}. {summary}".strip())
-            return texts
+            articles = []
+            for a in raw_list[:_ARTICLES_PER_TICKER]:
+                headline = (a.get("headline") or "").strip()
+                summary  = (a.get("summary") or "")[:200]
+                text     = f"{headline}. {summary}".strip(" .")
+                if not text:
+                    continue
+                # Finnhub datetime is a UNIX timestamp
+                ts = a.get("datetime", 0)
+                try:
+                    pub = datetime.fromtimestamp(int(ts))
+                    days_ago = max(0, (datetime.now() - pub).days)
+                except Exception:
+                    days_ago = _NEWS_DAYS // 2
+                articles.append((text, days_ago))
+            return articles
         except Exception as exc:
-            logger.debug("Finnhub news error for %s: %s", symbol, exc)
+            logger.debug("Finnhub news error %s: %s", symbol, exc)
             return []
-
-    @staticmethod
-    def _extract_texts(
-        articles: list, title_key: str = "title", desc_key: str = "description"
-    ) -> List[str]:
-        texts = []
-        for a in articles:
-            title = a.get(title_key, "") or ""
-            desc  = (a.get(desc_key, "") or "")[:200]
-            combined = f"{title}. {desc}".strip(" .")
-            if combined:
-                texts.append(combined)
-        return texts
 
     # ── Scoring ───────────────────────────────────────────────────────────────
 
-    def _score_texts(self, texts: List[str]) -> float:
-        """Average sentiment across all article snippets."""
-        if not texts:
+    def _score_articles(self, articles: List[Article]) -> float:
+        """Exponentially decay-weighted average of per-article sentiment scores."""
+        if not articles:
             return 0.0
-        scores = [self._score_one(t) for t in texts]
-        return float(np.mean(scores))
+
+        total_weight = 0.0
+        weighted_sum = 0.0
+
+        for text, days_ago in articles:
+            score  = self._score_one(text)
+            weight = _decay_weight(days_ago)
+            weighted_sum += score * weight
+            total_weight += weight
+
+        if total_weight == 0.0:
+            return 0.0
+        return float(weighted_sum / total_weight)
 
     def _score_one(self, text: str) -> float:
-        """Score a single text snippet. Returns value in [-1, +1]."""
+        """Score a single text. Returns value in [-1, +1]."""
         if self._use_finbert and self._finbert:
             try:
                 result = self._finbert(text[:512])[0]
@@ -244,13 +272,13 @@ class SentimentAgent:
                 conf   = float(result["score"])
                 return _FINBERT_MAP.get(label, 0.0) * conf
             except Exception:
-                pass   # fall through to VADER
+                pass
 
         if self._vader:
             try:
                 scores = self._vader.polarity_scores(text)
-                return float(scores["compound"])   # already in [-1, +1]
+                return float(scores["compound"])
             except Exception:
                 pass
 
-        return 0.0   # last resort: neutral
+        return 0.0

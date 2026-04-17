@@ -25,6 +25,39 @@ def add_volatility(df: pd.DataFrame, window: int = 21) -> pd.DataFrame:
     return df
 
 
+def add_pct_return(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
+    """Simple percentage return over *window* days."""
+    df[f"pct_return_{window}d"] = df["Close"].pct_change(window)
+    return df
+
+
+def add_drawdown(df: pd.DataFrame, window: int = 21) -> pd.DataFrame:
+    """Rolling drawdown from the rolling *window*-day peak (negative fraction)."""
+    rolling_max = df["Close"].rolling(window, min_periods=1).max()
+    df[f"drawdown_{window}d"] = (df["Close"] - rolling_max) / rolling_max.replace(0, np.nan)
+    return df
+
+
+def add_trend_strength(df: pd.DataFrame) -> pd.DataFrame:
+    """(Close - SMA50) / SMA50 clipped to [-0.5, 0.5] — positive means above trend."""
+    if "sma_50" not in df.columns:
+        df = add_sma(df, 50)
+    df["trend_strength"] = (
+        (df["Close"] - df["sma_50"]) / df["sma_50"].replace(0, np.nan)
+    ).clip(-0.5, 0.5)
+    return df
+
+
+def add_sma_ratios(df: pd.DataFrame) -> pd.DataFrame:
+    """SMA10/SMA50 and SMA50/SMA200 as relative position indicators."""
+    for w in (10, 50, 200):
+        if f"sma_{w}" not in df.columns:
+            df = add_sma(df, w)
+    df["sma_ratio_10_50"]  = df["sma_10"]  / df["sma_50"].replace(0, np.nan)
+    df["sma_ratio_50_200"] = df["sma_50"]  / df["sma_200"].replace(0, np.nan)
+    return df
+
+
 def add_momentum(df: pd.DataFrame, window: int = 21) -> pd.DataFrame:
     """Price momentum: (Close / Close[window] - 1)."""
     df[f"momentum_{window}d"] = df["Close"] / df["Close"].shift(window) - 1
@@ -164,19 +197,32 @@ def compute_technical_score(df: pd.DataFrame) -> float:
 def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Apply all indicators to *df* and return the enriched DataFrame."""
     df = df.copy()
+    # Returns — log (model-ready) and pct (human-interpretable)
     df = add_returns(df, 1)
     df = add_returns(df, 5)
     df = add_returns(df, 21)
+    df = add_pct_return(df, 5)
+    df = add_pct_return(df, 21)
+    # Volatility — 5d (short-term noise), 21d (monthly), 63d (quarterly)
+    df = add_volatility(df, 5)
     df = add_volatility(df, 21)
     df = add_volatility(df, 63)
+    # Momentum
     df = add_momentum(df, 21)
     df = add_momentum(df, 63)
+    # Moving averages — 10 added for short-term ratio
+    df = add_sma(df, 10)
     df = add_sma(df, 20)
     df = add_sma(df, 50)
     df = add_sma(df, 200)
     df = add_ema(df, 12)
     df = add_ema(df, 26)
     df = add_golden_cross(df)
+    # Derived MA ratios and drawdown
+    df = add_sma_ratios(df)
+    df = add_drawdown(df, 21)
+    df = add_trend_strength(df)
+    # Oscillators
     df = add_rsi(df, 14)
     df = add_macd(df)
     df = add_bollinger(df)

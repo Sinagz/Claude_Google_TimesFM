@@ -118,14 +118,30 @@ forecast:
     medium: 126
     long: 252
 
-# ── Signal Fusion Weights (must sum to 1.0) ───────────────────────────────────
+# ── Signal Fusion Weights ────────────────────────────────────────────────────
+# Forecast ensemble sub-weights (TimesFM + Chronos + ML must sum to 1.0)
 fusion:
-  timesfm_weight:      0.28
-  chronos_weight:      0.20
-  technical_weight:    0.20
-  sentiment_weight:    0.12
-  fundamentals_weight: 0.12
-  macro_weight:        0.08
+  ensemble_timesfm_weight:  0.40
+  ensemble_chronos_weight:  0.30
+  ensemble_ml_weight:       0.30
+  # Overall signal weights (must sum to 1.0)
+  forecast_ensemble_weight: 0.50
+  technical_weight:         0.18
+  sentiment_weight:         0.12
+  fundamentals_weight:      0.12
+  macro_weight:             0.08
+
+# ── ML Meta-Model ─────────────────────────────────────────────────────────────
+ml_model:
+  n_estimators:  200     # number of boosting rounds (XGBoost or sklearn GBM)
+  max_depth:     4       # tree depth; keep shallow to avoid overfitting
+  learning_rate: 0.05    # shrinkage
+
+# ── Pre-Ranking Filters ───────────────────────────────────────────────────────
+filters:
+  min_confidence:         0.40   # skip if ML confidence < this (all horizons)
+  max_model_disagreement: 0.20   # skip if |TimesFM% - Chronos%| / 100 > this
+  max_annual_volatility:  0.80   # skip if annualised 21-day vol > 80 %
 
 # ── Ranking ───────────────────────────────────────────────────────────────────
 ranking:
@@ -133,8 +149,9 @@ ranking:
 
 # ── Backtesting ───────────────────────────────────────────────────────────────
 backtest:
-  lookback_days: 365
+  lookback_days:  365
   rebalance_days: 30
+  train_window:   180   # rolling history window used for holding selection
 
 # ── Fundamentals Agent ────────────────────────────────────────────────────────
 fundamentals:

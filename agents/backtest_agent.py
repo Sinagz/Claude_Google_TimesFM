@@ -1,22 +1,28 @@
 """
 Backtesting Agent
 ──────────────────
-Simulates a simple equal-weight rebalancing strategy:
-  • Hold the top-N stocks ranked by technical score (no look-ahead).
-  • Rebalance every *rebalance_days* calendar days.
-  • Long-only, no transaction costs (conservative simplification).
+Walk-forward simulation of an equal-weight (or confidence-weighted) top-N
+rebalancing strategy on historical price data.
 
-Metrics computed
+Walk-forward design
+  At each rebalance point *i*, only data up to day *i* is used to select
+  holdings (no look-ahead).  Holdings are held for the next *rebalance_days*
+  period then re-evaluated.
+
+Position sizing (when ml_predictions provided)
+  position_weight[t] = confidence[t] / Σ confidence[held tickers]
+  Otherwise equal-weight: position_weight[t] = 1 / N
+
+Metrics
   • Cumulative return
   • Annualised return
-  • Annualised Sharpe ratio (risk-free rate = 0)
+  • Sharpe ratio  (risk-free rate = 0)
   • Maximum drawdown
-
-All calculations are purely historical — no forecast data is used here,
-so there is zero look-ahead bias.
+  • Win rate  (fraction of positive-return days)
+  • Portfolio equity curve
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,50 +37,47 @@ _TRADING_DAYS_PER_YEAR = 252
 
 class BacktestAgent:
     def __init__(self, config: dict):
-        self.lookback_days  = config["backtest"]["lookback_days"]
-        self.rebalance_days = config["backtest"]["rebalance_days"]
+        bt = config["backtest"]
+        self.lookback_days  = bt["lookback_days"]
+        self.rebalance_days = bt["rebalance_days"]
+        self.train_window   = bt.get("train_window", 180)
         self.top_n          = config["ranking"]["top_n"]
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def run(self, raw_data: Dict[str, pd.DataFrame]) -> dict:
+    def run(
+        self,
+        raw_data:       Dict[str, pd.DataFrame],
+        ml_predictions: Optional[Dict[str, Dict[str, dict]]] = None,
+    ) -> dict:
         """
         Parameters
         ----------
-        raw_data : {ticker -> OHLCV DataFrame}  (same as DataAgent output)
+        raw_data       : {ticker -> OHLCV DataFrame}  (same as DataAgent output)
+        ml_predictions : {ticker -> {horizon -> {predicted_return, confidence}}}
+                         Optional — used for confidence-weighted position sizing.
 
         Returns
         -------
         {
-            "cumulative_return":   float,
-            "annualised_return":   float,
-            "sharpe_ratio":        float,
-            "max_drawdown":        float,
-            "n_rebalances":        int,
-            "benchmark_return":    float,   # equal-weight buy-and-hold all tickers
-            "strategy_vs_bench":   float,   # alpha
-            "equity_curve":        [[date, portfolio_value], ...],
+            "cumulative_return", "annualised_return", "sharpe_ratio",
+            "max_drawdown", "win_rate", "n_rebalances",
+            "benchmark_return", "strategy_vs_bench", "equity_curve"
         }
         """
         logger.info("Running backtest over %d-day history …", self.lookback_days)
 
-        # Align all price series on a common date range
         prices = self._build_price_matrix(raw_data)
         if prices.empty or len(prices) < 30:
             logger.warning("Not enough data for backtest")
             return self._empty_result()
 
-        # Restrict to look-back window
-        prices = prices.iloc[-self.lookback_days :]
+        prices = prices.iloc[-self.lookback_days:]
         n_days = len(prices)
 
-        # ── Strategy equity curve ─────────────────────────────────────────
-        portfolio_values = self._simulate(prices)
+        portfolio_values = self._simulate(prices, ml_predictions)
 
-        # ── Benchmark: equal-weight buy-and-hold ─────────────────────────
-        bench_ret = self._benchmark_return(prices)
-
-        # ── Metrics ───────────────────────────────────────────────────────
+        bench_ret  = self._benchmark_return(prices)
         cum_ret    = float(portfolio_values[-1] / portfolio_values[0] - 1)
         ann_ret    = float((1 + cum_ret) ** (_TRADING_DAYS_PER_YEAR / n_days) - 1)
         daily_rets = np.diff(portfolio_values) / portfolio_values[:-1]
@@ -82,8 +85,7 @@ class BacktestAgent:
         max_dd     = self._max_drawdown(portfolio_values)
         win_rate   = self._win_rate(daily_rets)
 
-        # Build equity curve for plotting
-        dates = prices.index.strftime("%Y-%m-%d").tolist()
+        dates        = prices.index.strftime("%Y-%m-%d").tolist()
         equity_curve = [[d, round(float(v), 4)] for d, v in zip(dates, portfolio_values)]
 
         result = {
@@ -99,66 +101,101 @@ class BacktestAgent:
         }
 
         logger.info(
-            "Backtest result — cum_ret=%.2f%%  sharpe=%.2f  max_dd=%.2f%%  win_rate=%.1f%%",
+            "Backtest — cum=%.2f%%  sharpe=%.2f  maxDD=%.2f%%  winRate=%.1f%%",
             cum_ret * 100, sharpe, max_dd * 100, win_rate * 100,
         )
         return result
 
-    # ── Simulation ────────────────────────────────────────────────────────────
+    # ── Walk-forward simulation ───────────────────────────────────────────────
 
-    def _simulate(self, prices: pd.DataFrame) -> np.ndarray:
+    def _simulate(
+        self,
+        prices:         pd.DataFrame,
+        ml_predictions: Optional[Dict[str, Dict[str, dict]]],
+    ) -> np.ndarray:
         """
-        Walk forward through *prices* day by day.
-        Every *rebalance_days* days, re-rank tickers by trailing 21-day
-        technical score and switch holdings.
+        Walk forward day by day.
+        Every *rebalance_days* days, re-score and rebalance using only data
+        up to that point (train window = last *train_window* days).
+        Position weights are proportional to ML confidence when available;
+        otherwise equal-weight.
         """
         tickers   = list(prices.columns)
         n_days    = len(prices)
-        portfolio = np.ones(n_days)   # start at 1.0 (normalised)
-        holdings  = []                 # list of ticker names currently held
+        portfolio = np.ones(n_days)
+        holdings: List[str]           = []
+        weights:  Dict[str, float]    = {}
 
         for i in range(n_days):
-            # Rebalance on schedule
+            # Rebalance: walk-forward — use only past data up to day i
             if i % self.rebalance_days == 0:
-                available = prices.iloc[: i + 1]
-                if len(available) >= 30:
-                    holdings = self._select_holdings(available, tickers)
+                train_start = max(0, i - self.train_window)
+                avail = prices.iloc[train_start: i + 1]
+                if len(avail) >= 30:
+                    holdings, weights = self._select_holdings_weighted(
+                        avail, tickers, ml_predictions
+                    )
                 else:
                     holdings = tickers[: self.top_n]
+                    n = len(holdings)
+                    weights  = {t: 1.0 / n for t in holdings} if n else {}
 
-            if i == 0:
+            if i == 0 or not holdings:
                 continue
 
-            # Daily portfolio return = average return of held tickers
-            day_rets = []
+            total_w  = sum(weights.get(t, 0.0) for t in holdings)
+            if total_w == 0.0:
+                portfolio[i] = portfolio[i - 1]
+                continue
+
+            day_ret = 0.0
             for t in holdings:
                 prev = prices[t].iloc[i - 1]
                 curr = prices[t].iloc[i]
+                w    = weights.get(t, 0.0) / total_w
                 if prev > 0 and not np.isnan(prev) and not np.isnan(curr):
-                    day_rets.append((curr - prev) / prev)
+                    day_ret += w * (curr - prev) / prev
 
-            daily_ret = float(np.mean(day_rets)) if day_rets else 0.0
-            portfolio[i] = portfolio[i - 1] * (1 + daily_ret)
+            portfolio[i] = portfolio[i - 1] * (1 + day_ret)
 
         return portfolio
 
-    def _select_holdings(
-        self, prices: pd.DataFrame, tickers: List[str]
-    ) -> List[str]:
-        """Rank tickers by trailing technical score; return top-N."""
-        scores = {}
+    def _select_holdings_weighted(
+        self,
+        prices:         pd.DataFrame,
+        tickers:        List[str],
+        ml_predictions: Optional[Dict[str, Dict[str, dict]]],
+    ) -> Tuple[List[str], Dict[str, float]]:
+        """Rank by technical score; weight by ML confidence (short horizon)."""
+        scores:      Dict[str, float] = {}
+        confidences: Dict[str, float] = {}
+
         for t in tickers:
             col = prices[t].dropna()
             if len(col) < 30:
                 continue
             mini_df = pd.DataFrame({"Close": col})
             try:
-                enriched = build_feature_frame(mini_df)
-                scores[t] = compute_technical_score(enriched)
+                enriched    = build_feature_frame(mini_df)
+                scores[t]   = compute_technical_score(enriched)
             except Exception:
-                scores[t] = 0.5
-        ranked = sorted(scores, key=lambda x: scores[x], reverse=True)
-        return ranked[: self.top_n] or tickers[: self.top_n]
+                scores[t]   = 0.5
+            if ml_predictions and t in ml_predictions:
+                confidences[t] = float(
+                    ml_predictions[t].get("short", {}).get("confidence", 0.5) or 0.5
+                )
+            else:
+                confidences[t] = 0.5
+
+        ranked   = sorted(scores, key=lambda x: scores[x], reverse=True)
+        selected = ranked[: self.top_n] or tickers[: self.top_n]
+
+        total_c = sum(confidences.get(t, 0.5) for t in selected)
+        if total_c == 0.0:
+            total_c = len(selected) * 0.5
+        weights = {t: confidences.get(t, 0.5) / total_c for t in selected}
+
+        return selected, weights
 
     # ── Benchmark ────────────────────────────────────────────────────────────
 
@@ -177,38 +214,33 @@ class BacktestAgent:
     @staticmethod
     def _build_price_matrix(raw_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         """
-        Build a wide DataFrame (dates × tickers) of Close prices.
-        Drops tickers with more than 10 % missing data.
-        Forward-fills minor gaps.
+        Wide DataFrame (dates × tickers) of Close prices.
+        Normalises to tz-naive date-only per series before joining so that
+        mixed US/Canadian trading calendars align correctly.
         """
-        frames = {}
+        frames: Dict[str, pd.Series] = {}
         for ticker, df in raw_data.items():
             if "Close" not in df.columns:
                 continue
             s = df["Close"].copy()
-            # Normalise index to tz-naive date-only so US + Canadian calendars align
             if not isinstance(s.index, pd.DatetimeIndex):
                 s.index = pd.to_datetime(s.index, utc=True)
             if s.index.tz is not None:
                 s.index = s.index.tz_localize(None)
-            s.index = s.index.normalize()   # strip intraday time component
+            s.index = s.index.normalize()
             s = s[~s.index.duplicated(keep="last")]
             frames[ticker] = s
 
         if not frames:
             return pd.DataFrame()
 
-        combined = pd.DataFrame(frames)
-        combined = combined.sort_index()
-
-        # Drop tickers with > 10 % missing days (e.g. holidays-only gaps)
-        thresh = int(len(combined) * 0.90)
+        combined = pd.DataFrame(frames).sort_index()
+        thresh   = int(len(combined) * 0.90)
         combined = combined.dropna(thresh=thresh, axis=1)
         combined = combined.ffill().bfill()
-
         return combined
 
-    # ── Statistics ───────────────────────────────────────────────────────────
+    # ── Statistics ────────────────────────────────────────────────────────────
 
     @staticmethod
     def _sharpe(daily_rets: np.ndarray) -> float:
@@ -220,14 +252,12 @@ class BacktestAgent:
 
     @staticmethod
     def _max_drawdown(equity: np.ndarray) -> float:
-        """Maximum peak-to-trough drawdown (negative number → fraction)."""
         peak = np.maximum.accumulate(equity)
         dd   = (equity - peak) / peak
         return float(dd.min())
 
     @staticmethod
     def _win_rate(daily_rets: np.ndarray) -> float:
-        """Fraction of trading days with a positive portfolio return."""
         if len(daily_rets) == 0:
             return 0.0
         return float(np.sum(daily_rets > 0) / len(daily_rets))
